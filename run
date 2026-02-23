@@ -1,0 +1,4 @@
+#!/bin/bash
+out=$(basename $1 .cpp)
+export LD_LIBRARY_PATH=/usr/local/lib 
+g++ -fsanitize=leak -g $1 -std=c++20 -lcl -lsqlite3 -o $out && ./$out
