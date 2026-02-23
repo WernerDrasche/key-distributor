@@ -1,21 +1,13 @@
 #include "common.hpp"
 #include <cstdlib>
+#include <string>
 #include <thread>
 #include <condition_variable>
-#include <unordered_set>
+#include <unordered_map>
 
 #include <signal.h>
 
 bool running = true;
-
-struct permission {
-    std::string server;
-    std::string key_filepath;
-
-    permission(const char *server, const char *key_filepath)
-        : server(server)
-        , key_filepath(key_filepath) {}
-};
 
 struct database {
     sqlite3 *db;
@@ -30,7 +22,7 @@ struct database {
 
     static int user_row(void *arg, int ncols, char **colvals, char **colnames) {
         if (ncols != 3) return 1;
-        auto *set = (std::vector<user> *)(arg);
+        auto *set = static_cast<std::vector<user> *>(arg);
         int id = std::stoi(colvals[0]);
         set->emplace_back(colvals[1], colvals[2]);
         return 0;
@@ -45,24 +37,31 @@ struct database {
         return users;
     }
 
-    std::vector<permission> get_permissions(std::string_view username) {
+    std::unordered_map<std::string, std::string> get_permissions(std::string_view username) {
         static const char query[] = 
             "select s.name, k.filepath"
             " from users u"
             " join permissions p on u.id = p.user_id"
-            " join servers s on s.id = p.key_id"
             " join keys k on k.id = p.key_id"
+            " join servers s on s.id = k.server_id"
             " where u.name = ?;";
         sqlite3_stmt *stmt;
         int status = sqlite3_prepare_v2(db, query, sizeof(query), &stmt, NULL);
         if (status != SQLITE_OK) throw sql_error("sqlPreparePerm", db);
         status = sqlite3_bind_text(stmt, 1, username.cbegin(), username.size(), SQLITE_STATIC);
         if (status != SQLITE_OK) throw sql_error("sqlBindPerm", db);
+        std::unordered_map<std::string, std::string> perms;
         while ((status = sqlite3_step(stmt)) == SQLITE_ROW) {
-
+            auto server = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+            auto key_filepath = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+            if (!perms.try_emplace(server, key_filepath).second) {
+                //TODO: lock output
+                std::cerr << "WARN: " << username << " has multiple keys for " << server << '\n';
+            }
         }
         if (status != SQLITE_DONE) throw sql_error("sqlStepPerm", db);
-        return {};
+        sqlite3_finalize(stmt);
+        return perms;
     }
 } db("config.db");
 
@@ -133,9 +132,25 @@ void worker_thread() {
     dispatcher.write.notify_one();
     std::this_thread::sleep_for(std::chrono::seconds(2));
     std::string username = conn.username();
-    int len = sprintf(conn.netbuf, "Hello %s from server!", username.c_str());
-    db.get_permissions(username);
+    auto perms = db.get_permissions(username);
+    char *buf = conn.netbuf;
+    buf++[0] = perms.size();
+    int len = 1;
+    std::vector<std::string_view> keys;
+    keys.reserve(perms.size());
+    for (const auto &perm : perms) {
+        keys.emplace_back(perm.second);
+        int single_len = snprintf(buf, conn.netbuf_size - len, "%s", perm.first.c_str()) + 1;
+        buf += single_len;
+        len += single_len;
+    }
+    if (len >= conn.netbuf_size) throw "netbuf full";
     conn.sendall(len);
+    if (perms.empty()) return;
+    conn.recv(1);
+    int sel = conn.netbuf[0] - 1;
+    std::string_view key = keys.at(sel);
+    std::cout << key << std::endl;
 }
 
 void handle() {

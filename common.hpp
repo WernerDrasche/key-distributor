@@ -249,6 +249,8 @@ inline int invoke_with_error_handling(void (*fn)()) {
             std::cout << e << std::endl;
             return EXIT_FAILURE;
         }
+    } catch (const char *e) {
+        std::cout << e << std::endl;
     }
     return EXIT_SUCCESS;
 }

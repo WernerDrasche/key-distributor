@@ -13,6 +13,7 @@ struct connection_c : connection {
     }
 
     std::vector<user> get_users() override {
+        return {{"simon", "1234"}};
         user user;
         std::cout << "username: ";
         std::cin >> user.name;
@@ -22,9 +23,31 @@ struct connection_c : connection {
     }
 };
 
+unsigned choice(unsigned n) {
+    int choice;
+    do {
+        std::cout << "Select [1-" << n << "]: ";
+        std::cin >> choice;
+        std::cin.clear();
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    } while (choice < 1 || choice > n);
+    return choice;
+}
+
 void handle(connection &conn) {
     conn.recv();
-    std::cout << "received: " << conn.netbuf << std::endl;;
+    char *buf = conn.netbuf;
+    int n = buf++[0]; //this is a char
+    if (n == 0) throw "no permission";
+    for (int i = 1; i <= n; ++i) {
+        std::cout << i << ") " << buf << '\n';
+        buf += strlen(buf) + 1;
+    }
+    if (n > 1) {
+        n = choice(n);
+    }
+    conn.netbuf[0] = n;
+    conn.sendall(1);
 }
 
 void main_thread() {
