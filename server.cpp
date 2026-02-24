@@ -4,8 +4,12 @@
 #include <thread>
 #include <condition_variable>
 #include <unordered_map>
+#include <filesystem>
+#include <fstream>
 
 #include <signal.h>
+
+const char *const key_folder = "keys";
 
 bool running = true;
 
@@ -150,7 +154,10 @@ void worker_thread() {
     conn.recv(1);
     int sel = conn.netbuf[0] - 1;
     std::string_view key = keys.at(sel);
-    std::cout << key << std::endl;
+    std::ifstream f(std::filesystem::path(key_folder) / key, std::ios_base::binary);
+    len = f.read(conn.netbuf, conn.netbuf_size - 1).gcount();
+    conn.netbuf[len++] = 0;
+    conn.sendall(len);
 }
 
 void handle() {

@@ -25,10 +25,10 @@ create table permissions (
 );
 
 insert into users(name, password) values ('simon', '1234'), ('werner', '1234');
-insert into servers(name) values ('minecraft');
+insert into servers(name) values ('minecraft@wernerdrasche.de');
 insert into servers(name) values ('ark');
-insert into keys(filepath, server_id) values ('private', 1);
-insert into keys(filepath, server_id) values ('another', 1);
+insert into keys(filepath, server_id) values ('guest_key', 1);
+--insert into keys(filepath, server_id) values ('another', 1);
 insert into keys(filepath, server_id) values ('ark_priv', 2);
 insert into permissions values (1, 1);
 insert into permissions values (1, 2);
