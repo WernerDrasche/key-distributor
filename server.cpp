@@ -158,6 +158,7 @@ void worker_thread() {
     len = f.read(conn.netbuf, conn.netbuf_size - 1).gcount();
     conn.netbuf[len++] = 0;
     conn.sendall(len);
+    return;
 }
 
 void handle() {

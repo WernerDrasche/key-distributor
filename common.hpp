@@ -51,10 +51,11 @@ struct sql_error : std::exception {
 };
 
 struct crypt_error : std::exception {
+    int status;
     const char *fn;
     char scratchbuf[64] = {0};
 
-    crypt_error(const char *fn, int status) : fn(fn) {
+    crypt_error(const char *fn, int status) : status(status), fn(fn) {
         switch (status) {
             case CRYPT_ERROR_PARAM7...CRYPT_ERROR_PARAM1:
                 snprintf(scratchbuf, sizeof(scratchbuf), "error in parameter %i", status * -1);
@@ -164,7 +165,6 @@ struct connection {
         }
         cryptSetAttribute(session, CRYPT_SESSINFO_NETWORKSOCKET, fd);
         cryptSetAttribute(session, CRYPT_SESSINFO_ACTIVE, true);
-        std::cout << "TLS ready" << std::endl;
     }
 
     std::string username() {
@@ -192,7 +192,13 @@ struct connection {
         }
     }
 
-    int recv(int length = netbuf_size) {
+    int recv() {
+        int len = recv(netbuf, netbuf_size - 1);
+        netbuf[len] = 0;
+        return len;
+    }
+
+    int recv(int length) {
         return recv(netbuf, length);
     }
 
@@ -238,19 +244,17 @@ struct init_library<cryptlib> {
 inline int invoke_with_error_handling(void (*fn)()) {
     try {
         fn();
+        return EXIT_SUCCESS;
     } catch (const crypt_error &e) {
-        std::cout << e << std::endl;
-        return EXIT_FAILURE;
+        std::cerr << e << std::endl;
     } catch (const sql_error &e) {
-        std::cout << e << std::endl;
-        return EXIT_FAILURE;
+        std::cerr << e << std::endl;
     } catch (const sys_error &e) {
         if (e.old_errno != EINTR) {
-            std::cout << e << std::endl;
-            return EXIT_FAILURE;
+            std::cerr << e << std::endl;
         }
     } catch (const char *e) {
-        std::cout << e << std::endl;
+        std::cerr << e << std::endl;
     }
-    return EXIT_SUCCESS;
+    return EXIT_FAILURE;
 }
