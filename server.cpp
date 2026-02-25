@@ -181,7 +181,7 @@ void install_signal_handler() {
 void main_thread() {
     install_signal_handler();
     init_library<cryptlib> lib;
-    server serv(12345);
+    server serv(5555);
     while (running) {
         dispatcher.set_connection(connection_s(serv));
     }

@@ -4,29 +4,49 @@
 #include <string_view>
 #include <fstream>
 #include <algorithm>
+#include <unordered_map>
 
 #include <cryptlib.h>
 #include <unistd.h>
+#include <netdb.h>
+
+std::unordered_map<std::string, std::string> config;
+const char *default_hostname = "wernerdrasche.de";
 
 struct connection_c : connection {
-    connection_c(const char *ip, in_port_t port) {
+    connection_c(const char *server, in_port_t port) {
+        addrinfo hints = {
+            .ai_family = AF_INET,
+        };
+        addrinfo *results;
+        //should have own error type
+        if (getaddrinfo(server, NULL, &hints, &results)) throw sys_error("addrinfo");
+        addr = *reinterpret_cast<sockaddr_in *>(results->ai_addr);
+        addr.sin_port = htons(port);
+        freeaddrinfo(results);
         fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (fd < 0) throw sys_error("socket");
-        inet_aton(ip, &addr.sin_addr);
-        addr.sin_port = htons(port);
-        addr.sin_family = AF_INET;
         if (connect(fd, (sockaddr *)&addr, addrsize) < 0) throw sys_error("connect");
         netbuf = new char[netbuf_size];
         init_tls(CRYPT_SESSION_TLS);
     }
 
     std::vector<user> get_users() override {
-        return {{"simon", "1234"}};
         user user;
-        std::cout << "username: ";
-        std::cin >> user.name;
-        std::cout << "password: ";
-        std::cin >> user.password;
+        if (config.find("username") != config.end()) {
+            user.name = config["username"];
+        } else {
+            std::cout << "username: ";
+            std::cin >> user.name;
+            std::cin.ignore(1);
+        }
+        if (config.find("password") != config.end()) {
+            user.password = config["password"];
+        } else {
+            std::cout << "password: ";
+            std::cin >> user.password;
+            std::cin.ignore(1);
+        }
         return {user};
     }
 };
@@ -91,7 +111,12 @@ unsigned choice(unsigned n) {
 }
 
 std::pair<std::string, std::string> get_server_key(connection conn) {
-    conn.recv();
+    try {
+        conn.recv();
+    } catch (const crypt_error &e) {
+        if (e.status == CRYPT_ERROR_NOTINITED) throw "invalid login credentials";
+        throw;
+    }
     char *buf = conn.netbuf;
     int n = buf++[0]; //this is a char
     if (n == 0) throw "no permission";
@@ -99,10 +124,13 @@ std::pair<std::string, std::string> get_server_key(connection conn) {
     servers.reserve(n);
     for (int i = 1; i <= n; ++i) {
         servers.emplace_back(buf);
-        std::cout << i << ") " << buf << '\n';
         buf += strlen(buf) + 1;
     }
     if (n > 1) {
+        int i = 1;
+        for (auto server : servers) {
+            std::cout << i++ << ") " << server << '\n';
+        }
         n = choice(n);
     }
     std::string server(servers[n - 1]);
@@ -124,7 +152,7 @@ std::string_view strip_pem_header(std::string_view key) {
 void handle_ssh(connection &conn) {
     size_t len = 0;
     while (true) {
-        bool end_of_text = false;         // we want input (3)
+        bool end_of_text = false; // we want input (3)
         do {
             int n = conn.recv();
             std::cout << conn.netbuf + len;
@@ -140,7 +168,15 @@ void handle_ssh(connection &conn) {
 
 void main_thread() {
     init_library<cryptlib> lib;
-    auto [server, key] = get_server_key(connection_c("0.0.0.0", 12345));
+    std::string hostname;
+    if (config.find("hostname") != config.end()) {
+        hostname = config["hostname"].c_str();
+    } else {
+        std::cout << "hostname: ";
+        std::cin >> hostname;
+        std::cin.ignore(1);
+    }
+    auto [server, key] = get_server_key(connection_c(hostname.c_str(), 5555));
     std::string der = base64_decode(strip_pem_header(key), true);
     rsa_private_key priv = rsa_private_key::decode(der);
     /*
@@ -156,6 +192,7 @@ void main_thread() {
     }
 }
 
+/*
 void test_der() {
     std::ifstream f("test.der", std::ios_base::binary);
     static char buf[8192];
@@ -170,8 +207,51 @@ void test_der() {
         std::cout << e;
     }
 }
+*/
+
+void init_config() {
+    const char *filename = "config.txt";
+    std::fstream file(filename);
+    if (!file.is_open()) {
+        std::ofstream file(filename, std::ios_base::out | std::ios_base::trunc);
+        file << "*WARN: whitespace is not ignored*\nhostname="
+             << default_hostname
+             << "\nusername=\npassword=\n";
+        config["hostname"] = default_hostname;
+        return;
+    }
+    bool invalid = false;
+    char line[128];
+    if (file.peek() == '*') {
+        file.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    }
+    while (file.getline(line, sizeof(line))) {
+        std::string_view s = line;
+        size_t eq = s.find('=');
+        if (eq == s.size()) {
+            invalid = true;
+            break;
+        }
+        std::string key(s.substr(0, eq));
+        std::string val(s.substr(eq + 1));
+        if (!key.size()) {
+            invalid = true;
+            break;
+        }
+        if (!val.size()) continue;
+        config[std::move(key)] = std::move(val);
+    }
+    if (invalid) {
+        std::cerr << "WARN: config file invalid (must be 'key=value')" << std::endl;
+    }
+}
 
 int main() {
+    init_config();
     int ret = invoke_with_error_handling(main_thread);
+    if (ret != EXIT_SUCCESS) {
+        std::cout << "press enter to close" << std::endl;
+        std::cin.get();
+    } 
     return ret;
 }
