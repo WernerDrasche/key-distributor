@@ -1,0 +1,6 @@
+project('protocol', 'cpp', default_options: ['cpp_std=c++20'])
+cpp = meson.get_compiler('cpp')
+sqlite3 = dependency('sqlite3', fallback: 'sqlite3')
+cryptlib = cpp.find_library('cl')
+executable('server', 'server.cpp', dependencies: [sqlite3, cryptlib])
+executable('client', 'client.cpp', 'base64.cpp', 'der.cpp', dependencies: cryptlib)

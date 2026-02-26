@@ -1,54 +1,10 @@
-#include <cstdio>
 #include <exception>
 #include <iostream>
 #include <cassert>
-#include <mutex>
-#include <stdexcept>
-#include <vector>
-#include <string>
 
-#include <sqlite3.h>
 #include <cryptlib.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <string.h>
 
-static socklen_t addrsize = sizeof(sockaddr_in);
 static constexpr size_t username_maxlen = 32;
-
-inline std::ostream &operator<<(std::ostream &out, const sockaddr_in &addr) {
-    return out << inet_ntoa(addr.sin_addr);
-}
-
-struct sys_error : std::exception {
-    const char *fn;
-    const char *error;
-    int old_errno;
-
-    sys_error(const char *fn) : fn(fn), old_errno(errno), error(strerror(errno)) {}
-
-    const char *what() const noexcept override { return error; }
-
-    friend std::ostream &operator<<(std::ostream &out, const sys_error &self) {
-        return out << self.fn << ": " << self.error;
-    }
-};
-
-struct sql_error : std::exception {
-    const char *fn;
-    const char *error;
-
-    sql_error(const char *fn, sqlite3 *db) : fn(fn), error(sqlite3_errmsg(db)) {}
-    sql_error(const char *fn, const char *error) : fn(fn), error(error) {}
-    
-    const char *what() const noexcept override { return error; }
-
-    friend std::ostream &operator<<(std::ostream &out, const sql_error &self) {
-        return out << self.fn << ": " << self.error;
-    }
-};
 
 struct crypt_error : std::exception {
     int status;
@@ -90,28 +46,6 @@ struct crypt_error : std::exception {
     }
 };
 
-struct server {
-    int fd;
-
-    server(in_port_t port) {
-        fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (fd < 0) throw sys_error("socket");
-        int opt = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int));
-        sockaddr_in addr = {
-            .sin_family = AF_INET,
-            .sin_port = htons(port),
-            .sin_addr{INADDR_ANY},
-        };
-        if (bind(fd, (sockaddr *)&addr, addrsize) < 0) throw sys_error("bind");
-        if (listen(fd, 4) < 0) throw sys_error("listen");
-    }
-
-    ~server() { close(fd); }
-
-    operator int() { return fd; }
-};
-
 struct user {
     //IMPORTANT: don't change field order
     std::string name;
@@ -126,16 +60,14 @@ struct user {
 struct connection {
     static constexpr size_t netbuf_size = 4096;
 
-    int fd = -1;
-    sockaddr_in addr;
+    int fd;
     CRYPT_SESSION session;
-    char *netbuf;
+    char *netbuf = nullptr;
 
     connection() = default;
 
     connection(connection &&other)
         : fd(other.fd)
-        , addr(other.addr)
         , session(other.session)
         , netbuf(other.netbuf)
     {
@@ -145,26 +77,10 @@ struct connection {
     connection &operator=(connection &&other) {
         assert(!alive());
         fd = other.fd;
-        addr = other.addr;
         session = other.session;
         netbuf = other.netbuf;
         other.invalidate();
         return *this;
-    }
-    
-    virtual std::vector<user> get_users() { throw std::logic_error("unreachable"); }
-
-    void init_tls(CRYPT_SESSION_TYPE type) {
-        int status;
-        status = cryptCreateSession(&session, CRYPT_UNUSED, type);
-        if (cryptStatusError(status)) throw crypt_error("createSession", status);
-        std::vector users = get_users();
-        for (const user &user : users) {
-            cryptSetAttributeString(session, CRYPT_SESSINFO_USERNAME, user.name.c_str(), user.name.size());
-            cryptSetAttributeString(session, CRYPT_SESSINFO_PASSWORD, user.password.c_str(), user.password.size());
-        }
-        cryptSetAttribute(session, CRYPT_SESSINFO_NETWORKSOCKET, fd);
-        cryptSetAttribute(session, CRYPT_SESSINFO_ACTIVE, true);
     }
 
     std::string username() {
@@ -214,12 +130,11 @@ struct connection {
     ~connection() { 
         if (!alive()) return;
         cryptDestroySession(session);
-        close(fd); 
         delete[] netbuf;
     }
 
-    bool alive() { return fd != -1; }
-    void invalidate() { fd = -1; }
+    bool alive() { return netbuf; }
+    void invalidate() { netbuf = nullptr; }
 
     operator int() { return fd; }
 };
@@ -240,21 +155,3 @@ struct init_library<cryptlib> {
         cryptEnd();
     }
 };
-
-inline int invoke_with_error_handling(void (*fn)()) {
-    try {
-        fn();
-        return EXIT_SUCCESS;
-    } catch (const crypt_error &e) {
-        std::cerr << e << std::endl;
-    } catch (const sql_error &e) {
-        std::cerr << e << std::endl;
-    } catch (const sys_error &e) {
-        if (e.old_errno != EINTR) {
-            std::cerr << e << std::endl;
-        }
-    } catch (const char *e) {
-        std::cerr << e << std::endl;
-    }
-    return EXIT_FAILURE;
-}

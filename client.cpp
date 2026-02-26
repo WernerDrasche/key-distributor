@@ -1,54 +1,50 @@
 #include "common.hpp"
 #include "base64.hpp"
 #include "der.hpp"
-#include <string_view>
+#include <limits>
+#include <vector>
 #include <fstream>
-#include <algorithm>
 #include <unordered_map>
 
 #include <cryptlib.h>
-#include <unistd.h>
-#include <netdb.h>
 
 std::unordered_map<std::string, std::string> config;
 const char *default_hostname = "wernerdrasche.de";
 
+user get_user() {
+    user user;
+    if (config.find("username") != config.end()) {
+        user.name = config["username"];
+    } else {
+        std::cout << "username: ";
+        std::cin >> user.name;
+        std::cin.ignore(1);
+    }
+    if (config.find("password") != config.end()) {
+        user.password = config["password"];
+    } else {
+        std::cout << "password: ";
+        std::cin >> user.password;
+        std::cin.ignore(1);
+    }
+    return user;
+}
+
 struct connection_c : connection {
-    connection_c(const char *server, in_port_t port) {
-        addrinfo hints = {
-            .ai_family = AF_INET,
-        };
-        addrinfo *results;
-        //should have own error type
-        if (getaddrinfo(server, NULL, &hints, &results)) throw sys_error("addrinfo");
-        addr = *reinterpret_cast<sockaddr_in *>(results->ai_addr);
-        addr.sin_port = htons(port);
-        freeaddrinfo(results);
-        fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (fd < 0) throw sys_error("socket");
-        if (connect(fd, (sockaddr *)&addr, addrsize) < 0) throw sys_error("connect");
+    connection_c(std::string_view server, uint16_t port) {
         netbuf = new char[netbuf_size];
-        init_tls(CRYPT_SESSION_TLS);
+        int status;
+        status = cryptCreateSession(&session, CRYPT_UNUSED, CRYPT_SESSION_TLS);
+        if (cryptStatusError(status)) throw crypt_error("createSession", status);
+        user user = get_user();
+        cryptSetAttributeString(session, CRYPT_SESSINFO_USERNAME, user.name.c_str(), user.name.size());
+        cryptSetAttributeString(session, CRYPT_SESSINFO_PASSWORD, user.password.c_str(), user.password.size());
+        cryptSetAttributeString(session, CRYPT_SESSINFO_SERVER_NAME, server.data(), server.size());
+        cryptSetAttribute(session, CRYPT_SESSINFO_SERVER_PORT, port);
+        status = cryptSetAttribute(session, CRYPT_SESSINFO_ACTIVE, true);
+        if (cryptStatusError(status)) throw crypt_error("activateTLS", status);
     }
 
-    std::vector<user> get_users() override {
-        user user;
-        if (config.find("username") != config.end()) {
-            user.name = config["username"];
-        } else {
-            std::cout << "username: ";
-            std::cin >> user.name;
-            std::cin.ignore(1);
-        }
-        if (config.find("password") != config.end()) {
-            user.password = config["password"];
-        } else {
-            std::cout << "password: ";
-            std::cin >> user.password;
-            std::cin.ignore(1);
-        }
-        return {user};
-    }
 };
 
 struct connection_ssh : connection {
@@ -87,15 +83,11 @@ struct connection_ssh : connection {
             int len;
             int _ = cryptGetAttributeString(session, CRYPT_ATTRIBUTE_ERRORMESSAGE, errmsg, &len);
             fputs(errmsg, stderr);
+            puts("");
             delete[] errmsg;
             throw crypt_error("setActiveSSH", status);
         }
         netbuf = new char[netbuf_size];
-    }
-
-    ~connection_ssh() {
-        delete[] netbuf;
-        cryptDestroySession(session);
     }
 };
 
@@ -178,7 +170,7 @@ void main_thread() {
     }
     auto [server, key] = get_server_key(connection_c(hostname.c_str(), 5555));
     std::string der = base64_decode(strip_pem_header(key), true);
-    rsa_private_key priv = rsa_private_key::decode(der);
+    rsa_private_key priv = der_decode(der);
     /*
     std::cout << "modulus: " << priv.mod.bitsize() << '\n' << priv.mod << "\n\n";
     std::cout << "private: " << priv.priv.bitsize() << '\n' << priv.priv << "\n\n";
@@ -248,10 +240,18 @@ void init_config() {
 
 int main() {
     init_config();
-    int ret = invoke_with_error_handling(main_thread);
-    if (ret != EXIT_SUCCESS) {
+    int status = EXIT_FAILURE;
+    try {
+        main_thread();
+        status = EXIT_SUCCESS;
+    } catch (const crypt_error &e) {
+        std::cerr << e << std::endl;
+    } catch (const char *e) {
+        std::cerr << e << std::endl;
+    }
+    if (status == EXIT_FAILURE) {
         std::cout << "press enter to close" << std::endl;
         std::cin.get();
     } 
-    return ret;
+    return status;
 }
